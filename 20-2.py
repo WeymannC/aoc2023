@@ -1,8 +1,9 @@
+import json
 from abc import ABC, abstractmethod
 from collections import defaultdict, namedtuple
 from contextlib import suppress
 from functools import cache
-from itertools import cycle, combinations
+from itertools import cycle, combinations, count
 from math import lcm
 
 from aocd import get_data
@@ -28,18 +29,38 @@ class Module(ABC):
     def __init__(self, name, targets):
         self.name = name
         self.targets = targets
+        self.incoming = []
+        self.outgoing = []
+        self.first_low = None
+        self.first_high = None
 
     @abstractmethod
-    def __call__(self, pulse, origin):
+    def _call(self, iteration, pulse, origin):
         ...
+
+    def __call__(self, iteration, pulse, origin):
+        self.incoming.append(pulse)
+        self._call(iteration, pulse, origin)
 
     @abstractmethod
     def state(self):
         ...
 
-    def _send(self, pulse):
+    def _send(self, i, pulse):
+        self.outgoing.append(pulse)
+        if pulse == "low" and self.first_low is None:
+            self.first_low = i
+        if pulse == "high" and self.first_high is None:
+            self.first_high = i
         pulse_count[pulse] += len(self.targets)
         pulse_queue.extend((target, (pulse, self.name)) for target in self.targets)
+
+    def report(self):
+        return f"Incoming: {self.incoming}\nOutgoing: {self.outgoing}"
+
+    def reset(self):
+        self.incoming = []
+        self.outgoing = []
 
 
 class FlipFlop(Module):
@@ -47,15 +68,15 @@ class FlipFlop(Module):
         super().__init__(name, targets)
         self.on = False
 
-    def __call__(self, pulse, _):
+    def _call(self, i, pulse, _):
         if pulse == "high":
             return
         if self.on:
             self.on = False
-            self._send("low")
+            self._send(i, "low")
         else:
             self.on = True
-            self._send("high")
+            self._send(i, "high")
 
     def state(self):
         return self.on
@@ -66,12 +87,12 @@ class Conjunction(Module):
         super().__init__(name, targets)
         self._origins = {}
 
-    def __call__(self, pulse, origin):
+    def _call(self, i, pulse, origin):
         self._origins[origin] = pulse
         if all(p == "high" for p in self._origins.values()):
-            self._send("low")
+            self._send(i, "low")
         else:
-            self._send("high")
+            self._send(i, "high")
 
     def state(self):
         return self._origins
@@ -106,17 +127,21 @@ def parse_input(used_input):
             for other in modules.values():
                 if module.name in other.targets:
                     module.register_origin(other.name)
+    final_conjunction = next(iter(m for m in modules.values() if "rx" in m.targets))
+    final_origins = final_conjunction._origins
+    return modules, broadcaster_targets, final_origins
 
-    return modules, broadcaster_targets
 
-
-modules, broadcaster_targets = parse_input(used_input)
+modules, broadcaster_targets, final_origins = parse_input(used_input)
 starting_state = {k: v.state() for k, v in modules.items()}
-while True:
+for i in count(1):
     push_button(broadcaster_targets)
     while pulse_queue:
         target_name, args = pulse_queue.pop(0)
         if target_name == "rx" and args[0] == "low":
-            print(i + 1)
             break
-        modules.get(target_name, lambda *args: None)(*args)
+        modules.get(target_name, lambda *args: None)(i, *args)
+    if all(modules[m].first_high is not None for m in final_origins):
+        break
+
+print(lcm(*[modules[m].first_high for m in final_origins]))
